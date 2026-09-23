@@ -16,45 +16,46 @@ st.subheader("자주 나오는 국 종류는 무엇일까?")
 
 st.write(
     "2026년 송탄고등학교 급식 메뉴를 분석하여 "
-    "국·찌개·탕·전골 종류가 얼마나 자주 나오는지 알아봅니다."
+    "가장 자주 등장하는 국 종류를 알아봅니다."
 )
 
-# -----------------------------------
-# 송탄고등학교 급식 월별 데이터 가져오기
-# -----------------------------------
+# ---------------------------------------
+# 송탄고등학교 월별 급식 페이지
+# ---------------------------------------
 
 BASE_URL = "https://school.koreacharts.com/school/meals/B000012576"
 
-all_meals = []
+# 현재 시점인 2026년 9월까지 분석
+months = range(1, 10)
+
+all_menu_text = []
 
 progress = st.progress(0)
 status = st.empty()
 
-for month in range(1, 13):
+for i, month in enumerate(months):
 
     url = f"{BASE_URL}/2026{month:02d}.html"
 
     try:
         response = requests.get(
             url,
-            timeout=10,
             headers={
                 "User-Agent": "Mozilla/5.0"
-            }
+            },
+            timeout=15
         )
 
-        if response.status_code != 200:
-            continue
+        response.raise_for_status()
 
         soup = BeautifulSoup(
             response.text,
             "html.parser"
         )
 
+        # 페이지의 모든 텍스트 가져오기
         text = soup.get_text("\n")
 
-        # 중식 부분의 메뉴를 가져오기 위해
-        # 페이지 전체에서 급식 메뉴가 있는 부분을 분석
         lines = [
             line.strip()
             for line in text.split("\n")
@@ -62,177 +63,153 @@ for month in range(1, 13):
         ]
 
         for line in lines:
-
-            # 급식 메뉴에서 자주 사용되는 국 종류만 추출
-            if any(
-                keyword in line
-                for keyword in [
-                    "국",
-                    "찌개",
-                    "탕",
-                    "전골"
-                ]
-            ):
-                all_meals.append(line)
-
-        status.text(
-            f"2026년 {month}월 데이터 확인 중..."
-        )
+            all_menu_text.append(line)
 
     except Exception:
-        continue
+        pass
 
-    progress.progress(month / 12)
+    progress.progress((i + 1) / len(months))
 
 progress.empty()
 status.empty()
 
-# -----------------------------------
+# ---------------------------------------
 # 국 종류 추출
-# -----------------------------------
+# ---------------------------------------
 
 soup_counter = Counter()
 
-# 국으로 분류할 단어
-soup_keywords = [
-    "국",
-    "찌개",
-    "탕",
-    "전골"
+# 국으로 분류할 끝말
+patterns = [
+    r"[가-힣]+국",
+    r"[가-힣]+찌개",
+    r"[가-힣]+탕",
+    r"[가-힣]+전골"
 ]
 
-# 국으로 잘못 인식될 수 있는 단어
+# 잘못 국으로 잡힐 수 있는 단어
 exclude_words = [
     "국수",
     "국밥",
+    "국물",
     "전골볶음"
 ]
 
-for text in all_meals:
+for text in all_menu_text:
 
-    # 괄호 안 알레르기 번호 제거
+    # 알레르기 번호 제거
     text = re.sub(
         r"\([^)]*\)",
         "",
         text
     )
 
-    # 여러 기호 제거
+    # 숫자 제거
+    text = re.sub(
+        r"\d+",
+        "",
+        text
+    )
+
+    # 특수문자 제거
     text = text.replace(
         "ㆍ",
         " "
     )
 
-    text = text.replace(
-        ",",
-        " "
-    )
+    # 문장 안에서 국/찌개/탕/전골 찾기
+    for pattern in patterns:
 
-    # 공백 기준으로 메뉴 분리
-    foods = text.split()
+        matches = re.findall(
+            pattern,
+            text
+        )
 
-    for food in foods:
+        for food in matches:
 
-        food = food.strip()
+            food = food.strip()
 
-        if not food:
-            continue
+            if not food:
+                continue
 
-        # 잘못 분류될 수 있는 메뉴 제외
-        if any(
-            word in food
-            for word in exclude_words
-        ):
-            continue
+            if any(
+                word in food
+                for word in exclude_words
+            ):
+                continue
 
-        # 국/찌개/탕/전골 포함 여부
-        if any(
-            keyword in food
-            for keyword in soup_keywords
-        ):
+            soup_counter[food] += 1
 
-            # 숫자 제거
-            food = re.sub(
-                r"\d+",
-                "",
-                food
-            )
-
-            # 특수문자 제거
-            food = re.sub(
-                r"[^가-힣]",
-                "",
-                food
-            )
-
-            if food:
-                soup_counter[food] += 1
-
-# -----------------------------------
+# ---------------------------------------
 # 결과
-# -----------------------------------
+# ---------------------------------------
 
-if not soup_counter:
+if len(soup_counter) == 0:
 
     st.error(
         "급식 데이터를 가져오지 못했습니다."
     )
 
-else:
-
-    result = pd.DataFrame(
-        soup_counter.most_common(10),
-        columns=[
-            "국 종류",
-            "등장 횟수"
-        ]
+    st.write(
+        "인터넷 연결 또는 급식 사이트의 페이지 구조를 확인해주세요."
     )
 
-    st.success(
-        f"총 {sum(soup_counter.values())}개의 "
-        "국·찌개·탕·전골 메뉴를 찾았습니다."
-    )
+    st.stop()
 
-    # -----------------------------------
-    # TOP 10 표
-    # -----------------------------------
+# 데이터프레임 생성
+result = pd.DataFrame(
+    soup_counter.most_common(10),
+    columns=[
+        "국 종류",
+        "등장 횟수"
+    ]
+)
 
-    st.subheader("🥣 자주 나오는 국 TOP 10")
+# ---------------------------------------
+# 분석 결과
+# ---------------------------------------
 
-    st.dataframe(
-        result,
-        use_container_width=True,
-        hide_index=True
-    )
+st.success(
+    f"총 {sum(soup_counter.values())}개의 "
+    "국·찌개·탕·전골 메뉴를 찾았습니다."
+)
 
-    # -----------------------------------
-    # 막대그래프
-    # -----------------------------------
+st.subheader("🥣 송탄고에서 자주 나오는 국 TOP 10")
 
-    st.subheader("📊 국 종류별 등장 횟수")
+st.dataframe(
+    result,
+    use_container_width=True,
+    hide_index=True
+)
 
-    chart_data = result.set_index(
-        "국 종류"
-    )
+# ---------------------------------------
+# 그래프
+# ---------------------------------------
 
-    st.bar_chart(
-        chart_data
-    )
+st.subheader("📊 국 종류별 등장 횟수")
 
-    # -----------------------------------
-    # 가장 많이 나온 국
-    # -----------------------------------
+chart_data = result.set_index(
+    "국 종류"
+)
 
-    top_soup = result.iloc[0]["국 종류"]
-    top_count = result.iloc[0]["등장 횟수"]
+st.bar_chart(
+    chart_data
+)
 
-    st.info(
-        f"💡 2026년 송탄고등학교 급식에서 "
-        f"가장 자주 나온 국 종류는 **{top_soup}**이며, "
-        f"총 **{top_count}회** 등장했습니다."
-    )
+# ---------------------------------------
+# 가장 많이 나온 국
+# ---------------------------------------
 
-    st.caption(
-        "※ 급식 메뉴의 이름에 '국', '찌개', '탕', '전골'이 "
-        "포함된 메뉴를 기준으로 집계합니다."
-    )
+top_soup = result.iloc[0]["국 종류"]
+top_count = result.iloc[0]["등장 횟수"]
+
+st.info(
+    f"💡 분석 결과, 송탄고등학교 급식에서 "
+    f"가장 자주 등장한 국 종류는 **{top_soup}**이며 "
+    f"총 **{top_count}회** 등장했습니다."
+)
+
+st.caption(
+    "※ 2026년 1월부터 9월까지 확인 가능한 송탄고등학교 "
+    "급식 메뉴를 대상으로 분석했습니다."
+)
