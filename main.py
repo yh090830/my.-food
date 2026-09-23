@@ -1,215 +1,333 @@
 import streamlit as st
-import pandas as pd
 import requests
-from bs4 import BeautifulSoup
-import re
-from collections import Counter
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from urllib.parse import quote
+
+# ---------------------------------------
+# 기본 설정
+# ---------------------------------------
 
 st.set_page_config(
-    page_title="송탄고 급식 데이터 분석",
-    page_icon="🍲",
+    page_title="학교 급식 찾아보기",
+    page_icon="🍚",
     layout="wide"
 )
 
-st.title("🍲 송탄고등학교 급식 데이터 분석")
-st.subheader("자주 나오는 국 종류는 무엇일까?")
+st.title("🍚 학교 급식 찾아보기")
+st.write("학교 이름과 날짜를 선택하면 해당 학교의 중식 메뉴를 확인할 수 있습니다.")
 
-st.write(
-    "2026년 송탄고등학교 급식 메뉴를 분석하여 "
-    "가장 자주 등장하는 국 종류를 알아봅니다."
-)
+API_KEY = "sample key"
+
+SCHOOL_API = "https://open.neis.go.kr/hub/schoolInfo"
+MEAL_API = "https://open.neis.go.kr/hub/mealServiceDietInfo"
+
 
 # ---------------------------------------
-# 송탄고등학교 월별 급식 페이지
+# 학교 이름 변환
 # ---------------------------------------
 
-BASE_URL = "https://school.koreacharts.com/school/meals/B000012576"
+def expand_school_name(name):
+    """
+    줄임말을 정식 학교명 검색어로 바꿉니다.
 
-# 현재 시점인 2026년 9월까지 분석
-months = range(1, 10)
+    예:
+    수도여고 → 수도여자고등학교
+    서울고 → 서울고등학교
+    """
 
-all_menu_text = []
+    name = name.strip()
 
-progress = st.progress(0)
-status = st.empty()
+    # 여고 → 여자고등학교
+    if name.endswith("여고"):
+        name = name[:-2] + "여자고등학교"
 
-for i, month in enumerate(months):
+    # 남고 → 남자고등학교
+    elif name.endswith("남고"):
+        name = name[:-2] + "남자고등학교"
 
-    url = f"{BASE_URL}/2026{month:02d}.html"
+    # 일반적인 '고' → '고등학교'
+    elif name.endswith("고"):
+        name = name[:-1] + "고등학교"
+
+    return name
+
+
+# ---------------------------------------
+# 학교 검색
+# ---------------------------------------
+
+def search_schools(school_name):
+    params = {
+        "KEY": API_KEY,
+        "Type": "json",
+        "SCHUL_NM": school_name
+    }
 
     try:
         response = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0"
-            },
-            timeout=15
+            SCHOOL_API,
+            params=params,
+            timeout=10
         )
 
         response.raise_for_status()
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-        # 페이지의 모든 텍스트 가져오기
-        text = soup.get_text("\n")
-
-        lines = [
-            line.strip()
-            for line in text.split("\n")
-            if line.strip()
-        ]
-
-        for line in lines:
-            all_menu_text.append(line)
+        data = response.json()
 
     except Exception:
-        pass
+        return None, "API_ERROR"
 
-    progress.progress((i + 1) / len(months))
+    # 데이터 없음
+    if "RESULT" in data:
+        result = data["RESULT"]
 
-progress.empty()
-status.empty()
+        if isinstance(result, dict):
+            code = result.get("CODE", "")
+
+            if code == "INFO-200":
+                return [], "NO_DATA"
+
+    try:
+        rows = data["schoolInfo"][1]["row"]
+    except (KeyError, IndexError, TypeError):
+        return [], "NO_DATA"
+
+    return rows, "OK"
+
 
 # ---------------------------------------
-# 국 종류 추출
+# 급식 조회
 # ---------------------------------------
 
-soup_counter = Counter()
+def get_meal(school, selected_date):
 
-# 국으로 분류할 끝말
-patterns = [
-    r"[가-힣]+국",
-    r"[가-힣]+찌개",
-    r"[가-힣]+탕",
-    r"[가-힣]+전골"
-]
+    date_string = selected_date.strftime("%Y%m%d")
 
-# 잘못 국으로 잡힐 수 있는 단어
-exclude_words = [
-    "국수",
-    "국밥",
-    "국물",
-    "전골볶음"
-]
+    params = {
+        "KEY": API_KEY,
+        "Type": "json",
+        "ATPT_OFCDC_SC_CODE": school["ATPT_OFCDC_SC_CODE"],
+        "SD_SCHUL_CODE": school["SD_SCHUL_CODE"],
+        "MMEAL_SC_CODE": "2",
+        "MLSV_FROM_YMD": date_string,
+        "MLSV_TO_YMD": date_string,
+        "pSize": "1000",
+        "pIndex": "1"
+    }
 
-for text in all_menu_text:
-
-    # 알레르기 번호 제거
-    text = re.sub(
-        r"\([^)]*\)",
-        "",
-        text
-    )
-
-    # 숫자 제거
-    text = re.sub(
-        r"\d+",
-        "",
-        text
-    )
-
-    # 특수문자 제거
-    text = text.replace(
-        "ㆍ",
-        " "
-    )
-
-    # 문장 안에서 국/찌개/탕/전골 찾기
-    for pattern in patterns:
-
-        matches = re.findall(
-            pattern,
-            text
+    try:
+        response = requests.get(
+            MEAL_API,
+            params=params,
+            timeout=10
         )
 
-        for food in matches:
+        response.raise_for_status()
 
-            food = food.strip()
+        data = response.json()
 
-            if not food:
-                continue
+    except Exception:
+        return None, "API_ERROR"
 
-            if any(
-                word in food
-                for word in exclude_words
-            ):
-                continue
+    # 데이터 없음
+    if "RESULT" in data:
+        result = data["RESULT"]
 
-            soup_counter[food] += 1
+        if isinstance(result, dict):
+            code = result.get("CODE", "")
+
+            if code == "INFO-200":
+                return [], "NO_DATA"
+
+    try:
+        rows = data["mealServiceDietInfo"][1]["row"]
+    except (KeyError, IndexError, TypeError):
+        return [], "NO_DATA"
+
+    return rows, "OK"
+
 
 # ---------------------------------------
-# 결과
+# 학교 검색 UI
 # ---------------------------------------
 
-if len(soup_counter) == 0:
+school_name = st.text_input(
+    "학교 이름을 입력하세요",
+    placeholder="예: 송탄고, 수도여고"
+)
 
-    st.error(
-        "급식 데이터를 가져오지 못했습니다."
+schools = []
+search_message = ""
+
+if school_name:
+
+    # 1차 검색
+    schools, status = search_schools(school_name)
+
+    # 1차 검색 결과가 없으면 줄임말 변환 후 재검색
+    if status == "NO_DATA" or not schools:
+
+        expanded_name = expand_school_name(school_name)
+
+        # 실제로 검색어가 바뀐 경우에만 재검색
+        if expanded_name != school_name:
+
+            schools, status = search_schools(
+                expanded_name
+            )
+
+            if status == "OK" and schools:
+                search_message = (
+                    f"'{school_name}'을(를) "
+                    f"'{expanded_name}'로 바꾸어 검색했습니다."
+                )
+
+    # 검색 결과
+    if schools:
+
+        if search_message:
+            st.info(search_message)
+
+        st.success(
+            f"검색 결과 {len(schools)}개의 학교를 찾았습니다."
+        )
+
+        # 학교 선택용 목록
+        school_options = []
+
+        for school in schools:
+
+            school_text = (
+                f"{school['SCHUL_NM']} "
+                f"({school['LCTN_SC_NM']})"
+            )
+
+            school_options.append(school_text)
+
+        selected_index = st.selectbox(
+            "학교를 선택하세요",
+            range(len(school_options)),
+            format_func=lambda x: school_options[x]
+        )
+
+        selected_school = schools[selected_index]
+
+        # 선택한 학교 정보
+        st.info(
+            f"선택한 학교: **{selected_school['SCHUL_NM']}**  \n"
+            f"지역: **{selected_school['LCTN_SC_NM']}**"
+        )
+
+        # ---------------------------------------
+        # 날짜 선택
+        # ---------------------------------------
+
+        today_korea = datetime.now(
+            ZoneInfo("Asia/Seoul")
+        ).date()
+
+        selected_date = st.date_input(
+            "급식 날짜를 선택하세요",
+            value=today_korea
+        )
+
+        # ---------------------------------------
+        # 급식 조회
+        # ---------------------------------------
+
+        meal_rows, meal_status = get_meal(
+            selected_school,
+            selected_date
+        )
+
+        if meal_status == "API_ERROR":
+
+            st.error(
+                "급식 정보를 불러오는 중 문제가 발생했습니다. "
+                "잠시 후 다시 시도해주세요."
+            )
+
+        elif meal_status == "NO_DATA" or not meal_rows:
+
+            formatted_date = selected_date.strftime(
+                "%Y년 %m월 %d일"
+            )
+
+            st.warning(
+                f"**{formatted_date}**에는 "
+                f"이 학교의 중식 급식 정보가 없습니다."
+            )
+
+        else:
+
+            # 보통 해당 날짜에는 한 행이지만
+            # 여러 행이 있을 경우 모두 처리
+            for meal in meal_rows:
+
+                st.subheader(
+                    f"🍽️ {selected_date.strftime('%Y년 %m월 %d일')} 중식"
+                )
+
+                # 메뉴 원문
+                menu = meal.get(
+                    "DDISH_NM",
+                    ""
+                )
+
+                # <br/>을 줄바꿈으로 변경
+                menu = menu.replace(
+                    "<br/>",
+                    "\n"
+                )
+
+                menu = menu.replace(
+                    "<br>",
+                    "\n"
+                )
+
+                # 칼로리
+                calories = meal.get(
+                    "CAL_INFO",
+                    "-"
+                )
+
+                # 메뉴 표시
+                st.markdown("### 🍚 오늘의 메뉴")
+
+                st.text(
+                    menu
+                )
+
+                # 칼로리 표시
+                st.markdown("### 🔥 칼로리")
+
+                st.write(
+                    calories
+                )
+
+                st.caption(
+                    "※ 메뉴에 표시된 괄호 안 숫자는 "
+                    "알레르기 유발 식재료 번호입니다."
+                )
+
+
+    elif status == "API_ERROR":
+
+        st.error(
+            "학교 정보를 불러오는 중 문제가 발생했습니다. "
+            "잠시 후 다시 시도해주세요."
+        )
+
+    else:
+
+        st.warning(
+            f"'{school_name}'에 해당하는 학교를 찾지 못했습니다. "
+            "학교 이름을 다시 확인해주세요."
+        )
+
+else:
+
+    st.info(
+        "학교 이름을 입력하면 검색 결과에서 학교를 선택할 수 있습니다."
     )
-
-    st.write(
-        "인터넷 연결 또는 급식 사이트의 페이지 구조를 확인해주세요."
-    )
-
-    st.stop()
-
-# 데이터프레임 생성
-result = pd.DataFrame(
-    soup_counter.most_common(10),
-    columns=[
-        "국 종류",
-        "등장 횟수"
-    ]
-)
-
-# ---------------------------------------
-# 분석 결과
-# ---------------------------------------
-
-st.success(
-    f"총 {sum(soup_counter.values())}개의 "
-    "국·찌개·탕·전골 메뉴를 찾았습니다."
-)
-
-st.subheader("🥣 송탄고에서 자주 나오는 국 TOP 10")
-
-st.dataframe(
-    result,
-    use_container_width=True,
-    hide_index=True
-)
-
-# ---------------------------------------
-# 그래프
-# ---------------------------------------
-
-st.subheader("📊 국 종류별 등장 횟수")
-
-chart_data = result.set_index(
-    "국 종류"
-)
-
-st.bar_chart(
-    chart_data
-)
-
-# ---------------------------------------
-# 가장 많이 나온 국
-# ---------------------------------------
-
-top_soup = result.iloc[0]["국 종류"]
-top_count = result.iloc[0]["등장 횟수"]
-
-st.info(
-    f"💡 분석 결과, 송탄고등학교 급식에서 "
-    f"가장 자주 등장한 국 종류는 **{top_soup}**이며 "
-    f"총 **{top_count}회** 등장했습니다."
-)
-
-st.caption(
-    "※ 2026년 1월부터 9월까지 확인 가능한 송탄고등학교 "
-    "급식 메뉴를 대상으로 분석했습니다."
-)
